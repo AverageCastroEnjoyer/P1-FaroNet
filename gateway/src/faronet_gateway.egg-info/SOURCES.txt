@@ -1,0 +1,8 @@
+pyproject.toml
+src/faronet_gateway.egg-info/PKG-INFO
+src/faronet_gateway.egg-info/SOURCES.txt
+src/faronet_gateway.egg-info/dependency_links.txt
+src/faronet_gateway.egg-info/requires.txt
+src/faronet_gateway.egg-info/top_level.txt
+src/gateway/main.py
+src/gateway/service.py

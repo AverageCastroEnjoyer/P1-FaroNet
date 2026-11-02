@@ -1,0 +1,360 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[spanish,es-nodecimaldot]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{listings}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black}
+\setlist{itemsep=2pt,topsep=4pt}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{FaroNet -- Proyecto 1}
+\rhead{Documentación de avance}
+\cfoot{\thepage}
+\setlength{\headheight}{14.5pt}
+
+\lstdefinestyle{terminal}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\title{\textbf{FaroNet}\\Documentación del proyecto}
+\author{Esteban Castro \and Esteban Espinoza\\[4pt]
+Ingeniería de Computación -- Redes de Computadoras\\
+Profesor: Kevin Moraga}
+\date{1 de noviembre de 2026\\Versión de avance}
+
+\begin{document}
+\maketitle
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering
+\textbf{Documento de avance.} El proyecto no está concluido. Este texto describe
+el diseño y el estado observado al 1 de noviembre de 2026. Los resultados de
+hardware, pruebas de rendimiento y despliegue remoto que no se han medido se
+identifican como pendientes; no se presentan como resultados obtenidos.}}
+\end{center}
+\tableofcontents
+\newpage
+
+\section{Introducción}
+
+FaroNet es un prototipo académico de comunicación que combina un enlace óptico
+entre dispositivos Faro, una red mesh y servicios públicos desplegados en el
+edge. El objetivo de diseño es permitir el intercambio de mensajes privados
+cifrados y, de forma separada, ofrecer salas y feeds públicos. La arquitectura
+busca limitar la información que conocen los nodos intermedios y evitar que el
+Worker almacene mensajes privados en claro.
+
+La solución se divide en cuatro componentes: (1) un Faro basado en Raspberry Pi
+con LED emisor y receptor acondicionado; (2) software Python para framing,
+acceso al medio, criptografía y transporte mesh; (3) un gateway Python que
+envía operaciones autorizadas al Worker por HTTPS; y (4) un Worker JavaScript
+con Durable Objects y KV. El medio óptico y el Worker se pueden desarrollar y
+probar por separado antes de integrarlos.
+
+\begin{center}
+\begin{tabular}{c}
+Nodo / aplicación FaroNet $\leftrightarrow$ Faro óptico $\leftrightarrow$ Faro / nodo\\
+$\hspace{2cm}\updownarrow$ mesh con rutas onion de tres relays $\updownarrow$\\
+Gateway local $\xrightarrow{\text{HTTPS firmado}}$ Cloudflare Worker\\
+\hspace{2cm}salas públicas, feeds, dead drops y directorio
+\end{tabular}
+\end{center}
+
+\section{Ambiente de desarrollo}
+
+\subsection{Software}
+\begin{itemize}
+  \item Python 3.11 o posterior para Faro, nodos y gateway.
+  \item PyNaCl/libsodium para cifrado autenticado, cajas selladas y firmas Ed25519.
+  \item FastAPI, Uvicorn y HTTPX para el servicio local del gateway.
+  \item JavaScript en Cloudflare Workers; Wrangler 4 para desarrollo local y despliegue.
+  \item Durable Objects para coordinar WebSockets de salas y mantener estado temporal de autenticación y limitación.
+  \item Cloudflare KV para drops, feeds, claves públicas de gateway y réplica del directorio.
+  \item Windows/PowerShell para el desarrollo actual. El backend GPIO requiere Raspberry Pi OS y GPIO Zero.
+\end{itemize}
+
+\subsection{Hardware y herramientas}
+El netlist preliminar utiliza Raspberry Pi con GPIO17 para TX, GPIO27 para RX,
+GPIO22 para el botón de pánico y GPIO23--25 para indicadores. El circuito
+incluye LED emisor con transistor, fototransistor, comparador, resistencias,
+capacitores y pulsador. La placa final debe soldarse en perfboard/stripboard o
+PCB y usar headers para retirar la Raspberry Pi. Se requieren cautín, estaño,
+multímetro y el equipo para tomar fotografías de ambas caras de la placa.
+
+El netlist y la lista de piezas disponibles están en
+\texttt{EsquématicoCircuito/faro\_netlist\_y\_lista.md}. La documentación de
+avance no afirma que la placa final esté soldada ni que se hayan completado las
+mediciones eléctricas.
+
+\subsection{Depuración y flujo de trabajo}
+Se utiliza el loopback para ejercitar framing sin hardware, mensajes genéricos
+de error para no exponer secretos y Wrangler local para inspeccionar las rutas
+del Worker. Las claves privadas se suministran mediante variables de entorno;
+no deben agregarse al repositorio. Antes de la entrega se recomienda registrar
+cambios con Git, ejecutar las verificaciones de cada capa y conservar las
+mediciones de hardware con fecha, distancia y condiciones ambientales.
+
+\section{Diseño}
+
+\subsection{Capa física y enlace}
+El diseño propone OOK con codificación Manchester, transmisión half-duplex y
+tramas de hasta 128 bytes antes de codificar símbolos. La trama contiene
+preambulo \texttt{AA AA}, delimitador \texttt{D5}, versión, tipo, direcciones
+de 8 bytes, secuencia, longitud, payload y CRC-16/CCITT-FALSE. El payload
+máximo definido es 102 bytes. Los tipos iniciales son DATA, ACK, BEACON y
+CONTROL. El acceso al medio realiza detección de portadora, backoff y
+confirmación ACK con reintentos.
+
+El framing y Manchester están separados de los backends físicos. Hay un
+backend loopback y un backend GPIO para los pines indicados. El backend GPIO
+usa temporización de software; su tasa efectiva, BER, sincronización del
+receptor y desempeño frente a luz ambiental siguen pendientes de validación
+en el circuito real. No se reportan como demostradas las distancias mínimas ni
+las mediciones exigidas por el enunciado.
+
+\subsection{Mesh, privacidad y aplicación privada}
+Las entradas de directorio contienen clave pública, capacidades, expiración y
+firma Ed25519. El nodo puede rechazar entradas inválidas o vencidas. La
+búsqueda de rutas admite un mínimo configurable de relays y el transporte
+privado exige al menos tres. Cada relay retira una capa onion y reenvía el
+paquete interno. El contenido se cifra extremo a extremo con
+XChaCha20-Poly1305 mediante PyNaCl; se usa padding de tamaño fijo para los
+mensajes que caben en el límite implementado. Los mensajes privados mayores
+que ese límite se rechazan.
+
+La interfaz de aplicación privada convierte texto UTF-8 en tramas mesh y
+descifra el payload recibido. La integración completa de selección de ruta,
+transporte entre nodos físicos, sesiones de usuario y una interfaz de chat no
+está concluida.
+
+El controlador de pánico permite registrar buffers mutables de secretos,
+cancelar estado pendiente, limpiar sesiones, rotar la dirección y activar el
+indicador. El backend GPIO detecta el botón. Falta validar en hardware que la
+acción física active todo el ciclo de pánico de extremo a extremo. El borrado
+en Python no puede garantizar la eliminación de copias inmutables de bytes ni
+de datos ya observados por terceros.
+
+\subsection{Gateway y edge}
+El gateway local expone un servicio FastAPI en loopback y firma solicitudes
+HTTPS con Ed25519, timestamp y nonce. Su clave pública se registra en el
+binding KV \texttt{GATEWAY\_KEYS}; la privada y el secreto compartido de drops
+se configuran localmente. No se deben registrar claves, payloads, direcciones
+físicas ni identificadores.
+
+El Worker implementa una página de sala pública, salas WebSocket coordinadas
+por Durable Objects, feeds Atom, directorio de lectura pública y drops
+cifrados de 1024 bytes con expiración. El token del drop se deriva mediante
+HMAC-SHA256 de un secreto compartido y un identificador aleatorio. El Worker
+almacena el blob cifrado, sin descifrarlo. El rate limiting tiene un límite
+global demostrativo. KV tiene consistencia eventual; en particular, la lectura
+y eliminación de un drop no son una operación atómica frente a solicitudes
+concurrentes.
+
+\subsection{Amenazas, privacidad y límites}
+Se consideran nodos mesh maliciosos, observadores del medio óptico, el operador
+del gateway, el proveedor del edge y un atacante con acceso temporal al
+dispositivo. Se protegen el texto privado, las claves y la relación origen--
+destino. Las mitigaciones previstas son cifrado autenticado, onion routing de
+tres relays, firmas verificables, expiración, padding, rotación de direcciones,
+no persistencia deliberada de encabezados identificadores y botón de pánico.
+
+Estas medidas no eliminan el análisis temporal o volumétrico del tráfico, la
+observación de metadatos por el proveedor de edge, ni el compromiso de un
+extremo. El Worker no escribe deliberadamente IP, User-Agent ni direcciones
+físicas en almacenamiento de aplicación; el proveedor de Cloudflare puede
+observar datos de conexión conforme a su plataforma. La política de no
+registro debe revisarse también en las herramientas de despliegue y
+observabilidad.
+
+\section{Estructuras de datos y funciones principales}
+
+\begin{longtable}{p{0.28\textwidth}p{0.64\textwidth}}
+\toprule
+\textbf{Componente} & \textbf{Estructuras y responsabilidades}\\
+\midrule
+\endhead
+\texttt{faro.link.frame} & \texttt{Frame}, tipos, serialización, validación de longitudes y CRC.\\
+\texttt{faro.link.mac} & Acceso half-duplex, CCA, backoff, ACK y cola temporal de tramas recibidas.\\
+\texttt{faro.physical} & Contrato \texttt{PhysicalBackend}, loopback, Manchester y backend GPIO Raspberry Pi.\\
+\texttt{faro.privacy.crypto} & Cifrado autenticado, cajas selladas y funciones de firma/verificación usando PyNaCl.\\
+\texttt{faro.mesh.directory} & Entradas firmadas, canonicalización y verificación de firma y expiración.\\
+\texttt{faro.mesh.routing} & Búsqueda de ruta con mínimo de relays; error explícito si la ruta no está disponible.\\
+\texttt{faro.mesh.fragmentation} & Identificador de mensaje, índice/cantidad de fragmentos, reensamblado con TTL y límites de memoria.\\
+\texttt{faro.mesh.onion/transport} & Capas por relay, cifrado extremo a extremo, padding y creación de tramas.\\
+\texttt{faro.application.private\_chat} & Conversión texto/tramas y apertura de mensajes privados en el destino.\\
+\texttt{gateway} & Cliente HTTP firmado y servicio local para feeds y drops.\\
+\texttt{edge/src} & Enrutamiento Worker; salas WebSocket, rate limiter, estado anti-replay, feeds, drops y directorio.\\
+\bottomrule
+\end{longtable}
+
+\section{Instrucciones de ejecución}
+
+\subsection{Worker local}
+Desde \texttt{Progra/edge}, instalar Wrangler si no está disponible y completar
+los IDs de namespaces en \texttt{wrangler.toml}. En desarrollo local se
+pueden crear namespaces y usar sus bindings locales. La clave pública del
+gateway se coloca en el KV local \texttt{GATEWAY\_KEYS}; los valores privados
+no se escriben en el repositorio.
+
+\begin{lstlisting}[style=terminal]
+npx wrangler kv namespace create DROPS
+npx wrangler kv namespace create DIRECTORY
+npx wrangler kv namespace create PUBLIC_FEEDS
+npx wrangler kv namespace create GATEWAY_KEYS
+npx wrangler dev --local-protocol https
+\end{lstlisting}
+
+La URL local reportada durante la sesión de desarrollo fue
+\texttt{https://127.0.0.1:8787}. Se observó respuesta HTTP 200 para \texttt{/}
+y \texttt{/v1/nodes}. Esta comprobación confirma el inicio y esas dos rutas;
+no equivale a una prueba integral de autenticación, WebSockets, expiración o
+despliegue remoto.
+
+\subsection{Gateway local}
+Desde \texttt{Progra/gateway}, crear/activar el entorno virtual e instalar el
+proyecto:
+\begin{lstlisting}[style=terminal]
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+\end{lstlisting}
+
+En la misma terminal, configurar las variables requeridas sin guardar valores
+secretos en archivos versionados:
+\begin{lstlisting}[style=terminal]
+$env:FARONET_EDGE_URL = "https://127.0.0.1:8787"
+$env:FARONET_KEY_ID = "ID_PUBLICO_DEL_GATEWAY"
+$env:FARONET_SIGNING_KEY_HEX = "CLAVE_PRIVADA_HEX"
+$env:FARONET_DROP_SECRET_B64 = "SECRETO_COMPARTIDO_BASE64URL"
+python -m gateway.service
+\end{lstlisting}
+
+La terminal con Wrangler debe permanecer abierta. La ejecución local del
+gateway debe considerarse pendiente hasta obtener una respuesta satisfactoria
+de \texttt{/health} y una publicación autenticada de prueba.
+
+\subsection{Faro y módulos Python}
+Desde \texttt{Progra/faro}, instalar el paquete. En Raspberry Pi, instalar
+además el extra GPIO. El backend debe instanciarse con la tasa de símbolos
+medida para el circuito y enlazarse con \texttt{OpticalLink}.
+\begin{lstlisting}[style=terminal]
+python -m pip install -e .
+python -m pip install -e ".[rpi]"
+\end{lstlisting}
+
+La ejecución con GPIO no se considera validada hasta intercambiar tramas entre
+dos Faros y registrar resultados a tres distancias con luz ambiental normal.
+
+\section{Actividades realizadas por estudiante}
+
+\begin{center}
+\fcolorbox{red}{red!5}{\parbox{0.9\textwidth}{\textbf{Borrador ilustrativo, pendiente de validación.} La tabla siguiente es una
+propuesta de organización basada en la bitácora de referencia y el estado del
+repositorio. Las fechas, horas y atribuciones no son registros comprobados.
+Esteban Castro y Esteban Espinoza deben corregirla usando sus actividades
+reales antes de cualquier entrega académica.}}
+\end{center}
+
+\begin{longtable}{p{0.17\textwidth}p{0.15\textwidth}p{0.11\textwidth}p{0.48\textwidth}}
+\toprule
+\textbf{Fecha y hora} & \textbf{Estudiante} & \textbf{Horas estimadas} & \textbf{Actividad propuesta para validar}\\
+\midrule
+\endhead
+29/10/2026, 18:30--20:00 & Esteban Castro & 1.5 & Revisión del enunciado, requisitos del Faro físico y división inicial de tareas.\\
+29/10/2026, 18:30--20:30 & Esteban Espinoza & 2.0 & Revisión de arquitectura, capas de red y criterios de privacidad del proyecto.\\
+30/10/2026, 15:00--18:30 & Esteban Castro & 3.5 & Revisión de materiales disponibles y compra de componentes faltantes para el prototipo.\\
+30/10/2026, 19:00--20:30 & Esteban Espinoza & 1.5 & Organización del plan de trabajo y revisión de alternativas para Worker y gateway.\\
+31/10/2026, 09:00--12:00 & Esteban Castro & 3.0 & Elaboración/revisión del netlist y esquema preliminar con Raspberry Pi y circuito óptico.\\
+31/10/2026, 10:00--12:00 & Esteban Espinoza & 2.0 & Revisión de contratos de software y separación entre capas física, enlace y mesh.\\
+31/10/2026, 12:40--14:10 & Esteban Castro & 1.5 & Redacción inicial del modelo de amenazas y discusión de direcciones rotables.\\
+31/10/2026, 12:40--14:10 & Esteban Espinoza & 1.5 & Revisión de adversarios, mitigaciones y límites del modelo de amenazas.\\
+31/10/2026, 14:30--18:00 & Esteban Castro & 3.5 & Implementación/revisión de framing, CRC, Manchester y acceso al medio en software.\\
+31/10/2026, 14:30--18:00 & Esteban Espinoza & 3.5 & Implementación/revisión de directorio firmado, rutas, fragmentación y cifrado onion.\\
+01/11/2026, 10:00--13:00 & Esteban Castro & 3.0 & Integración de privacidad y transporte mesh; revisión de padding y manejo de mensajes.\\
+01/11/2026, 10:00--13:00 & Esteban Espinoza & 3.0 & Revisión de gateway, autenticación por firma y configuración local del Worker.\\
+01/11/2026, 14:00--17:00 & Esteban Castro & 3.0 & Trabajo inicial de Worker, feeds/drops y backend GPIO experimental.\\
+01/11/2026, 14:00--17:00 & Esteban Espinoza & 3.0 & Integración local, revisión de rutas HTTP y configuración de entorno del gateway.\\
+01/11/2026, 17:30--18:30 & Esteban Castro & 1.0 & Consolidación de documentación de avance y pendientes de verificación.\\
+01/11/2026, 17:30--18:30 & Esteban Espinoza & 1.0 & Revisión cruzada del estado del proyecto y preparación de próximos pasos.\\
+\midrule
+\multicolumn{2}{r}{Total ilustrativo Esteban Castro} & 20.0 & Debe reemplazarse por el total de horas reales.\\
+\multicolumn{2}{r}{Total ilustrativo Esteban Espinoza} & 17.5 & Debe reemplazarse por el total de horas reales.\\
+\bottomrule
+\end{longtable}
+
+\section{Estado, autoevaluación y limitaciones}
+
+\subsection{Estado al 1 de noviembre de 2026}
+El código cubre un prototipo de framing y acceso al medio, estructuras de
+mesh, operaciones criptográficas, una interfaz privada mínima, un gateway
+local y rutas del Worker. El Worker inició localmente con Durable Objects y
+namespaces KV; las rutas \texttt{/} y \texttt{/v1/nodes} respondieron 200.
+Wrangler indicó recursos en modo local. No se ha confirmado un despliegue
+remoto. En la sesión documentada, el servicio gateway aún no había completado
+un arranque satisfactorio.
+
+No se han documentado resultados de BER o throughput, distancias medidas,
+pruebas con dos dispositivos ópticos, placa soldada final, pánico físico de
+extremo a extremo ni sesión de chat privada entre nodos físicos. La
+limitación de tiempo de GPIO desde espacio de usuario y la consistencia
+eventual de KV deben tenerse presentes al interpretar el prototipo.
+
+\subsection{Autoevaluación preliminar}
+Escala: 1 = muy malo, 2 = malo, 3 = regular, 4 = bueno, 5 = muy bueno. Estas
+calificaciones son una autoevaluación de avance por completar por el grupo;
+no son una evaluación externa.
+
+\begin{center}
+\begin{tabular}{p{0.72\textwidth}c}
+\toprule
+\textbf{Rubro} & \textbf{Borrador}\\
+\midrule
+Aprendizaje de soldadura y hardware & Pendiente\\
+Aprendizaje de la capa física & Pendiente\\
+Aprendizaje de enrutamiento en redes mesh & 3\\
+Aprendizaje de privacidad y anonimato & 3\\
+Aprendizaje de serverless en el edge & 3\\
+Aprendizaje de redacción de RFCs & 3\\
+\bottomrule
+\end{tabular}
+\end{center}
+Las notas deben ser acordadas por ambos integrantes después de revisar los
+resultados reales. El reporte de commits de Git se agregará cuando el código
+esté en un repositorio Git con el historial correspondiente.
+
+\subsection{Problemas y trabajo pendiente}
+\begin{enumerate}
+  \item Completar instalación y validación del gateway local, incluyendo una publicación autenticada y rechazo de replay.
+  \item Crear namespaces remotos, reemplazar IDs locales en Wrangler, autenticar la cuenta Cloudflare y verificar despliegue reproducible.
+  \item Corroborar salas WSS desde navegador, feeds Atom, tamaño fijo/TTL/consumo de drops y acceso al directorio.
+  \item Integrar las aplicaciones con el transporte real de nodos y probar rutas de al menos tres relays.
+  \item Calibrar el GPIO en el circuito final; medir tasa efectiva y BER en al menos tres distancias con luz ambiental normal.
+  \item Soldar y revisar el Faro; registrar continuidad, ausencia de corto VCC--GND, voltajes clave, BOM final y fotografías de ambas caras.
+  \item Verificar el botón de pánico, rotación de dirección y borrado de estado sensible con el dispositivo real.
+  \item Actualizar RFC y documentación con mediciones, pruebas, comandos y limitaciones observadas.
+\end{enumerate}
+
+\section{Lecciones aprendidas}
+\begin{itemize}
+  \item Definir temprano interfaces entre framing, medio físico y aplicación permite desarrollar con loopback mientras el circuito se termina.
+  \item La temporización de GPIO desde un sistema operativo general puede limitar la confiabilidad; el rendimiento debe medirse en el hardware final y no inferirse del simulador.
+  \item Las operaciones de almacenamiento con consistencia eventual requieren límites claros: TTL mínimo, concurrencia y semántica de lectura única.
+  \item Los secretos deben configurarse en el entorno de ejecución y nunca pegarse en documentos, bitácoras o repositorios.
+  \item Una función que compila o responde localmente no demuestra por sí sola el cumplimiento integral; cada requisito debe enlazarse con evidencia reproducible.
+\end{itemize}
+
+\end{document}

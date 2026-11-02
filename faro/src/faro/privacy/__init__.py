@@ -1,0 +1,1 @@
+"""Privacidad y criptografía FaroNet."""

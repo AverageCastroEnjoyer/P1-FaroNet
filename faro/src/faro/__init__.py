@@ -1,0 +1,1 @@
+"""Software modular del dispositivo Faro."""

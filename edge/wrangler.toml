@@ -1,0 +1,35 @@
+name = "faronet-edge"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[[durable_objects.bindings]]
+name = "PUBLIC_ROOMS"
+class_name = "PublicRoom"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITS"
+class_name = "RateLimiter"
+
+[[durable_objects.bindings]]
+name = "AUTH_STATE"
+class_name = "AuthState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PublicRoom", "RateLimiter", "AuthState"]
+
+[[kv_namespaces]]
+binding = "DROPS"
+id = "892b8bd029144f26abe56aa2723cda1a"
+
+[[kv_namespaces]]
+binding = "DIRECTORY"
+id = "82dee09b28144cafb06381e7285e5516"
+
+[[kv_namespaces]]
+binding = "PUBLIC_FEEDS"
+id = "214cd2d41a0a49a785d7ac48c28bb544"
+
+[[kv_namespaces]]
+binding = "GATEWAY_KEYS"
+id = "d809f82a8b2f471c8ff0602bd41c99ec"
